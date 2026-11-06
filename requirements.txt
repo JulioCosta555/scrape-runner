@@ -1,0 +1,5 @@
+requests
+selenium>=4.10
+numpy
+pandas
+pyarrow
