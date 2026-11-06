@@ -1,0 +1,102 @@
+name: daily-scrape
+ 
+on:
+  schedule:
+    - cron: "17 5 * * *"   # every day 05:17 UTC (GitHub sometimes starts scheduled runs a bit late)
+  workflow_dispatch:         # the "Run workflow" button
+    inputs:
+      only:
+        description: "Only these leagues, comma-separated (e.g. USA/MLS,USA/USL or Brazil). Empty = all"
+        required: false
+        default: ""
+ 
+permissions:
+  contents: write            # for the daily keep-alive commit
+ 
+concurrency:
+  group: daily-scrape
+  cancel-in-progress: false
+ 
+env:
+  DRIVE_REMOTE: gdrive
+  DRIVE_ROOT: scrape
+  PYTHONUNBUFFERED: "1"
+ 
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Google Drive login
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::Add the RCLONE_CONF secret (see README)"; exit 1; fi
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Read the league list from Drive
+        id: plan
+        env:
+          ONLY: ${{ inputs.only }}
+        run: python pipeline.py plan --only "$ONLY" >> "$GITHUB_OUTPUT"
+ 
+  scrape:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350     # GitHub's hard limit is 360; pipeline.py stops scraping well before
+    strategy:
+      fail-fast: false       # one league failing never stops the others
+      max-parallel: 6        # leagues at the same time - gentle on Scoresway/Fotmob and Drive
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Google Drive login
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Scrape, merge, save to Drive
+        env:
+          LEAGUE_JSON: ${{ toJSON(matrix) }}
+        run: python pipeline.py run
+ 
+  # GitHub pauses schedules in public repos after 60 days without activity.
+  # One tiny commit per day keeps it running forever.
+  keepalive:
+    needs: scrape
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Record last run
+        env:
+          RESULT: ${{ needs.scrape.result }}
+        run: |
+          echo "$(date -u +%Y-%m-%dT%H:%MZ) $RESULT" > last_run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add last_run.txt
+          git commit -m "last run $(date -u +%F)" && git push || echo "nothing to commit"
+ 
