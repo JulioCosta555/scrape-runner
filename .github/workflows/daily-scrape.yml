@@ -121,6 +121,8 @@ jobs:
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
       - name: Train xG model, save each league's xG.parquet
+        env:
+          XG_EXTRA_ARGS: ${{ vars.XG_EXTRA_ARGS }}   # e.g. --model lgbm (repository variable)
         run: python pipeline.py xg
  
   # One job per league: build_wide_events_loc.py with the shots / no-shots flags.
@@ -178,4 +180,3 @@ jobs:
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add last_run.txt
           git commit -m "last run $(date -u +%F)" && git push || echo "nothing to commit"
- 
