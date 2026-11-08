@@ -1,5 +1,7 @@
 requests
 selenium>=4.10
-numpy
-pandas
-pyarrow
+numpy>=1.24
+pandas>=2.0
+pyarrow>=12.0
+scikit-learn>=1.3
+matplotlib>=3.7

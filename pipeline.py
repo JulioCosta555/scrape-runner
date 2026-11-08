@@ -3,27 +3,30 @@
 pipeline.py - runs your daily scrape on GitHub Actions, with everything stored in Google Drive.
 
     python pipeline.py plan [--only "USA/MLS,USA/USL"]   -> the list of leagues, for GitHub
-    python pipeline.py run                                 -> one league (LEAGUE_JSON env var)
+    python pipeline.py run                                 -> scrape + merge one league (LEAGUE_JSON)
+    python pipeline.py xg                                  -> xG model over every league
+    python pipeline.py wide                                -> wide table for one league (LEAGUE_JSON)
 
 Your scripts are NOT in this repository. Every run downloads them from Google Drive:
 
     My Drive/scrape/_code/
-        leaguetest5.py  fotmobshots.py  scrape_merger3.py
+        leaguetest5.py  fotmobshots.py  scrape_merger3.py  build_wide_events_loc.py
         scrape_leagues.csv
         Events.csv  Opta_Ids.csv           (your Opta definitions; any subfolder is fine)
+        xG_model/run_xg.py  xG_model/xg/...  (the xG model, as in your zip)
         requirements.txt                   (optional: extra pip packages, e.g. LanusStats)
 
 Each league lives in My Drive/scrape/<country>/<league>/:
-    output.tar   all the Scoresway JSON, packed into one file (fast to move every day)
-    shots.tar    all the fotmob shots JSON, packed the same way
-    merged/      the parquet files, as normal files you can open
+    output.tar      all the Scoresway JSON, packed into one file (fast to move every day)
+    shots.tar       all the fotmob shots JSON, packed the same way
+    merged/         scrape_merger3 output (replaced by every scrape)
     merged_narrow/  only if events_shape = narrow
+    xG.parquet      this league's shots with model xG        (written by `xg`)
+    xt_grid.json    the league's fitted xT surface, reused   (shots leagues, written by `wide`)
+    wide_events/    the final wide table                     (written by `wide`)
+and the pooled model output in My Drive/scrape/_xG/.
 
-One league, one run:
-    1. download its output.tar / shots.tar and unpack, so the scrapers skip matches already done
-    2. leaguetest5.py, then fotmobshots.py if the league has a fotmob id
-    3. scrape_merger3.py
-    4. upload whatever changed
+Daily order: run (every league) -> xg (once, all leagues pooled) -> wide (every league).
 The scrapers are stopped before GitHub's 6-hour limit so progress is always saved;
 an unfinished league carries on the next day.
 """
@@ -67,6 +70,9 @@ MERGE_FORMAT = _env("MERGE_FORMAT", "parquet")
 # Time budget inside GitHub's 6-hour job limit (minutes from the start of the job)
 EVENTS_DEADLINE_MIN = float(_env("EVENTS_DEADLINE_MIN", "210"))
 SHOTS_DEADLINE_MIN = float(_env("SHOTS_DEADLINE_MIN", "270"))
+# xG model: extra run_xg.py options (e.g. "--model lgbm"), and where its pooled output goes
+XG_EXTRA_ARGS = _env("XG_EXTRA_ARGS", "")
+XG_DRIVE_FOLDER = _env("XG_DRIVE_FOLDER", "_xG")
 
 REQUIRED_SCRIPTS = ("leaguetest5.py", "fotmobshots.py", "scrape_merger3.py")
 ARCHIVED = ("output", "shots")
@@ -227,10 +233,39 @@ def fetch_code(only: str | None = None) -> None:
 
 
 def find_code_file(name: str) -> Path:
-    hits = [p for p in CODE.rglob(name) if not p.name.startswith("._")]
+    hits = [p for p in CODE.rglob(name)
+            if not p.name.startswith("._") and "__MACOSX" not in p.parts]
     if not hits:
         raise SystemExit(f"'{name}' not found in Drive folder {ROOT}/_code")
     return hits[0]
+
+
+def download_if_exists(parts: tuple[str, ...], name: str, dest: Path) -> bool:
+    """Copy Drive file <parts>/<name> to dest. False if it isn't there."""
+    if remote_listing(remote(*parts)).get(name) is not False:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    rclone("copyto", remote(*parts, name), str(dest))
+    return True
+
+
+def replace_file(local: Path, dest: str) -> None:
+    """Upload, then delete-and-rename instead of overwriting, so Drive doesn't keep
+    old versions of big files that would eat your storage."""
+    rclone("copyto", str(local), dest + ".uploading")
+    rclone("deletefile", "--drive-use-trash=false", dest, ok_codes=(0, 3, 4))
+    rclone("moveto", dest + ".uploading", dest)
+
+
+def replace_dir(local: Path, dest: str) -> int:
+    n = len(data_files(local))
+    if not n:
+        return 0
+    rclone("purge", "--drive-use-trash=false", dest + ".uploading", ok_codes=(0, 3))
+    rclone("copy", str(local), dest + ".uploading")
+    rclone("purge", "--drive-use-trash=false", dest, ok_codes=(0, 3))
+    rclone("moveto", dest + ".uploading", dest)
+    return n
 
 
 # ----------------------------------------------------------------------------- local files
@@ -285,11 +320,11 @@ class StepFailed(RuntimeError):
     pass
 
 
-def run(cmd: list[str], title: str, deadline: float | None = None) -> str:
+def run(cmd: list[str], title: str, deadline: float | None = None, cwd: Path | None = None) -> str:
     """Run a script, streaming output into the GitHub log. Returns 'ok' or 'timeout'."""
     print(f"::group::{title}", flush=True)
     print("$ " + shlex.join(cmd), flush=True)
-    proc = subprocess.Popen(cmd, cwd=str(CODE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    proc = subprocess.Popen(cmd, cwd=str(cwd or CODE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, errors="replace", env={**os.environ, "PYTHONUNBUFFERED": "1"})
 
     def pump():
@@ -438,12 +473,7 @@ def cmd_run(args) -> None:
             log(f"{part}: nothing new")
             continue
         count = pack(league_dir, part, tmp / f"{part}.tar")
-        dest = remote(lg.name, f"{part}.tar")
-        rclone("copyto", str(tmp / f"{part}.tar"), dest + ".uploading")
-        # delete-then-rename instead of overwriting, so Drive doesn't keep old versions
-        # of a big file that would eat your storage
-        rclone("deletefile", "--drive-use-trash=false", dest, ok_codes=(0, 3, 4))
-        rclone("moveto", dest + ".uploading", dest)
+        replace_file(tmp / f"{part}.tar", remote(lg.name, f"{part}.tar"))
         (tmp / f"{part}.tar").unlink()
         log(f"{part}: saved {count} file(s) as {part}.tar (+{n - before[part]} new)")
         if part in migrated:  # the loose-file copy is now inside the .tar
@@ -451,14 +481,9 @@ def cmd_run(args) -> None:
             log(f"{part}: moved your uploaded folder into {part}.tar (old folder is in Drive's trash)")
 
     for d in merged_dirs:
-        if not data_files(d):
-            continue
-        dest = remote(lg.name, d.name)
-        rclone("purge", "--drive-use-trash=false", dest + ".uploading", ok_codes=(0, 3))
-        rclone("copy", str(d), dest + ".uploading")
-        rclone("purge", "--drive-use-trash=false", dest, ok_codes=(0, 3))
-        rclone("moveto", dest + ".uploading", dest)
-        log(f"{d.name}: uploaded {len(data_files(d))} file(s)")
+        n = replace_dir(d, remote(lg.name, d.name))
+        if n:
+            log(f"{d.name}: uploaded {n} file(s)")
 
     mins = (time.time() - start) / 60
     if problems:
@@ -468,15 +493,118 @@ def cmd_run(args) -> None:
     log(f"{lg.name}: done in {mins:.0f} min")
 
 
+def model_file_stem(lg: League) -> str:
+    """'USA/MLS' + '2026' -> 'USA__MLS_final_events_2026'.
+
+    run_xg.py reads the season and a fallback league name out of the file name
+    (season_from_path / league_from_path), and records the name in `source_file`,
+    which is how each shot finds its way back to its league folder."""
+    base = re.sub(r"[^\w.-]+", "-", lg.name.replace("/", "__")).strip("-")
+    return f"{base}_final_events_{lg.season.replace('/', '-')}"
+
+
+def cmd_xg(args) -> None:
+    """Pool every league's merged/final_events.parquet and run your xG model on it."""
+    import pandas as pd
+
+    fetch_code()
+    run_xg = find_code_file("run_xg.py")
+    leagues = load_leagues(find_code_file(LEAGUES_CSV))
+    stage, out, split = WORK / "_xg_input", WORK / "_xg_out", WORK / "_xg_split"
+
+    sources: dict[str, League] = {}
+    for lg in leagues:
+        f = stage / f"{model_file_stem(lg)}.parquet"
+        if download_if_exists((lg.name, "merged"), "final_events.parquet", f):
+            sources[f.name] = lg
+        else:
+            log(f"{lg.name}: no merged/final_events.parquet yet - not in today's model")
+    if not sources:
+        raise SystemExit("No league has merged/final_events.parquet in Drive yet - scrape first.")
+    log(f"xG model over {len(sources)} league(s)")
+
+    try:
+        run([sys.executable, run_xg.name, "--data", str(stage / "*.parquet"),
+             "--out", str(out), "--split-output", *shlex.split(XG_EXTRA_ARGS)],
+            "run_xg.py (all leagues pooled)", cwd=run_xg.parent)
+    except StepFailed as e:
+        gh("error", f"xG model: {e}")
+        sys.exit(1)
+
+    # Each league's own shots -> <league>/xG.parquet, matched by source file name.
+    # (run_xg's by_league/ split is by competition name, and several of your
+    # leagues share one, e.g. "Primera División" in Chile, Bolivia and Venezuela.)
+    table = pd.read_parquet(out / "all_leagues_xG.parquet")
+    for fname, lg in sources.items():
+        part = table[table["source_file"] == fname]
+        if part.empty:
+            gh("warning", f"{lg.name}: the model found no shots in this league")
+            continue
+        p = split / lg.name / "xG.parquet"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        part.to_parquet(p, index=False)
+        replace_file(p, remote(lg.name, "xG.parquet"))
+        log(f"{lg.name}: {len(part):,} shots, {int(part['goal'].sum())} goals, "
+            f"{part['xg'].sum():.1f} xG -> xG.parquet")
+    n = replace_dir(out, remote(XG_DRIVE_FOLDER))
+    log(f"pooled model output: {n} file(s) -> {ROOT}/{XG_DRIVE_FOLDER}/")
+
+
+def cmd_wide(args) -> None:
+    """build_wide_events_loc.py for one league, with your flags for shots / no-shots leagues."""
+    lg = League(**json.loads(args.league or os.environ["LEAGUE_JSON"]))
+    fetch_code()
+    script = find_code_file("build_wide_events_loc.py")
+    merger = find_code_file("scrape_merger3.py")
+    if merger.parent != script.parent:  # --enrich imports scrape_merger3 from beside the script
+        (script.parent / merger.name).write_bytes(merger.read_bytes())
+
+    merged = WORK / lg.name / "merged"
+    events = merged / "final_events.parquet"
+    if not download_if_exists((lg.name, "merged"), "final_events.parquet", events):
+        gh("notice", f"{lg.name}: no merged/final_events.parquet yet - nothing to widen")
+        return
+
+    cmd = [sys.executable, script.name, "--events", str(events)]
+    grid, had_grid = merged / "xt_grid.json", False
+    if lg.has_fotmob:
+        # shots league: fotmob xG is already in final_events
+        had_grid = download_if_exists((lg.name,), "xt_grid.json", grid)
+        cmd += ["--enrich", "--carry-events", "--xthreat", "--xt-grid", str(grid)]
+    else:
+        # no-shots league: xG comes from your model
+        xg = merged / "xG.parquet"
+        if download_if_exists((lg.name,), "xG.parquet", xg):
+            cmd += ["--xg", str(xg)]
+        else:
+            gh("warning", f"{lg.name}: no xG.parquet from the model yet - wide table built without it")
+        cmd += ["--carry-events", "--xthreat"]
+    cmd += ["--out", str(merged / "wide_events")]
+
+    try:
+        run(cmd, "build_wide_events_loc.py", cwd=script.parent)
+    except StepFailed as e:
+        gh("error", f"{lg.name}: {e}")
+        sys.exit(1)
+
+    n = replace_dir(merged / "wide_events", remote(lg.name, "wide_events"))
+    log(f"wide_events: uploaded {n} file(s)")
+    if lg.has_fotmob and grid.exists() and not had_grid:
+        replace_file(grid, remote(lg.name, "xt_grid.json"))
+        log("xt_grid.json: first fit saved - reused from now on")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--only", default="", help="comma-separated league folders, e.g. 'USA/MLS,Brazil'")
-    r = sub.add_parser("run")
-    r.add_argument("--league", help="league JSON (default: $LEAGUE_JSON)")
+    for name in ("run", "wide"):
+        r = sub.add_parser(name)
+        r.add_argument("--league", help="league JSON (default: $LEAGUE_JSON)")
+    sub.add_parser("xg")
     args = ap.parse_args()
-    {"plan": cmd_plan, "run": cmd_run}[args.cmd](args)
+    {"plan": cmd_plan, "run": cmd_run, "xg": cmd_xg, "wide": cmd_wide}[args.cmd](args)
 
 
 if __name__ == "__main__":
