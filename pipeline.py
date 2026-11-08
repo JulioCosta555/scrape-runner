@@ -509,6 +509,37 @@ def model_file_stem(lg: League) -> str:
     return f"{base}_final_events_{lg.season.replace('/', '-')}"
 
 
+def label_competition_by_country(path: Path, lg: League) -> dict[str, str]:
+    """In the model's copy of final_events, matchCompetition -> "<matchCountry> | <name>".
+
+    run_xg.py treats matchCompetition as "the league", and Bolivia, Chile and
+    Venezuela are all "Primera División" there, so without this they are one
+    league in the leave-one-league-out test, the calibration tables and
+    by_league/. Only this temporary copy changes; the files in Drive don't.
+    Returns {new label: Opta's original name} so it can be put back afterwards.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(path)
+    folder_country, folder_league = lg.name.split("/")[0], lg.name.split("/")[-1]
+    if "matchCompetition" in df.columns:
+        comp = df["matchCompetition"].astype("string").str.strip()
+        comp = comp.where(comp.fillna("").ne(""), folder_league)
+    else:  # no name at all: the folder from your CSV stands in
+        comp = pd.Series(folder_league, index=df.index, dtype="string")
+    if "matchCountry" in df.columns:
+        country = df["matchCountry"].astype("string").str.strip()
+        country = country.where(country.fillna("").ne(""), folder_country)
+    else:
+        country = pd.Series(folder_country, index=df.index, dtype="string")
+    label = country + " | " + comp
+    df["matchCompetition"] = label
+    df.to_parquet(path, index=False)
+    pairs = pd.DataFrame({"label": label, "orig": comp}).drop_duplicates("label")
+    log(f"{lg.name}: model sees it as " + ", ".join(f"'{v}'" for v in pairs["label"].head(3)))
+    return dict(zip(pairs["label"], pairs["orig"]))
+
+
 def cmd_xg(args) -> None:
     """Pool every league's merged/final_events.parquet and run your xG model on it."""
     import pandas as pd
@@ -519,10 +550,12 @@ def cmd_xg(args) -> None:
     stage, out, split = WORK / "_xg_input", WORK / "_xg_out", WORK / "_xg_split"
 
     sources: dict[str, League] = {}
+    original_name: dict[str, str] = {}   # "Chile | Primera División" -> "Primera División"
     for lg in leagues:
         f = stage / f"{model_file_stem(lg)}.parquet"
         if download_if_exists((lg.name, "merged"), "final_events.parquet", f):
             sources[f.name] = lg
+            original_name.update(label_competition_by_country(f, lg))
         else:
             log(f"{lg.name}: no merged/final_events.parquet yet - not in today's model")
     if not sources:
@@ -546,6 +579,12 @@ def cmd_xg(args) -> None:
         if part.empty:
             gh("warning", f"{lg.name}: the model found no shots in this league")
             continue
+        if "matchCompetition" in part.columns:
+            # this league's file keeps Opta's own name; the combined one goes alongside
+            part = part.copy()
+            part["league_label"] = part["matchCompetition"]
+            part["matchCompetition"] = part["matchCompetition"].map(
+                lambda v: original_name.get(v, v) if isinstance(v, str) else v)
         p = split / lg.name / "xG.parquet"
         p.parent.mkdir(parents=True, exist_ok=True)
         part.to_parquet(p, index=False)
