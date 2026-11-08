@@ -70,7 +70,10 @@ MERGE_FORMAT = _env("MERGE_FORMAT", "parquet")
 # Time budget inside GitHub's 6-hour job limit (minutes from the start of the job)
 EVENTS_DEADLINE_MIN = float(_env("EVENTS_DEADLINE_MIN", "210"))
 SHOTS_DEADLINE_MIN = float(_env("SHOTS_DEADLINE_MIN", "270"))
-# xG model: extra run_xg.py options (e.g. "--model lgbm"), and where its pooled output goes
+# xG model: extra run_xg.py options, and where its pooled output goes.
+# Set XG_EXTRA_ARGS as a GitHub variable (Settings -> Secrets and variables -> Actions ->
+# Variables), e.g. "--model lgbm" or "--model lgbm --folds 10". Empty = run_xg.py's
+# defaults (--model hgb), the same as your command on the Mac.
 XG_EXTRA_ARGS = _env("XG_EXTRA_ARGS", "")
 XG_DRIVE_FOLDER = _env("XG_DRIVE_FOLDER", "_xG")
 
@@ -230,6 +233,12 @@ def fetch_code(only: str | None = None) -> None:
     if only:
         args += ["--include", only]
     rclone(*args)
+    # Optional extra packages listed in Drive _code/requirements.txt, for every job
+    # (scrape, xG, wide), so nothing has to change in GitHub to add one.
+    extra_req = CODE / "requirements.txt"
+    if not only and extra_req.exists():
+        log("installing extra packages from Drive _code/requirements.txt")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(extra_req)], check=True)
 
 
 def find_code_file(name: str) -> Path:
@@ -386,9 +395,6 @@ def cmd_run(args) -> None:
     for s in REQUIRED_SCRIPTS:
         find_code_file(s)
     events_def, quals_def = find_code_file("Events.csv"), find_code_file("Opta_Ids.csv")
-    extra_req = CODE / "requirements.txt"
-    if extra_req.exists():
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(extra_req)], check=True)
 
     # --- this league's existing data, so the scrapers only fetch new matches
     league_dir = WORK / lg.name
