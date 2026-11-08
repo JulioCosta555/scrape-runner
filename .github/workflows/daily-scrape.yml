@@ -120,6 +120,14 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Extra swap for big leagues
+        run: |
+          # GitHub machines have 16 GB of memory; this adds 16 GB of overflow on the spare disk
+          # so a very big league slows down instead of being stopped (exit code 143).
+          (sudo fallocate -l 16G /mnt/swapfile2 && sudo chmod 600 /mnt/swapfile2 \
+            && sudo mkswap /mnt/swapfile2 >/dev/null && sudo swapon /mnt/swapfile2) \
+            || echo "::warning::could not add extra swap - continuing without it"
+          free -h
       - name: Train xG model, save each league's xG.parquet
         env:
           XG_EXTRA_ARGS: ${{ vars.XG_EXTRA_ARGS }}   # e.g. --model lgbm (repository variable)
@@ -135,7 +143,7 @@ jobs:
        inputs.stages == 'xg-and-wide' || inputs.stages == 'wide')
     name: wide ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -157,6 +165,14 @@ jobs:
         run: |
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Extra swap for big leagues
+        run: |
+          # GitHub machines have 16 GB of memory; this adds 16 GB of overflow on the spare disk
+          # so a very big league slows down instead of being stopped (exit code 143).
+          (sudo fallocate -l 16G /mnt/swapfile2 && sudo chmod 600 /mnt/swapfile2 \
+            && sudo mkswap /mnt/swapfile2 >/dev/null && sudo swapon /mnt/swapfile2) \
+            || echo "::warning::could not add extra swap - continuing without it"
+          free -h
       - name: Build wide_events
         env:
           LEAGUE_JSON: ${{ toJSON(matrix) }}
@@ -180,3 +196,4 @@ jobs:
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add last_run.txt
           git commit -m "last run $(date -u +%F)" && git push || echo "nothing to commit"
+ 
