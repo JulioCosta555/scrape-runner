@@ -204,8 +204,23 @@ const BUILTINS = {
 
 // ------------------------------------------------------- compile the cells ---
 // loaded only now, after the browser stand-ins above exist
-const { parseModule } = await import("@observablehq/parser");
-const { Runtime } = await import("@observablehq/runtime");
+// Both packages ship an older module format in some versions; under import() their
+// functions can then sit on `default` instead of being named exports. Take them from
+// wherever they are, and fall back to require().
+async function load(pkg, name) {
+  let mod = null;
+  try { mod = await import(pkg); } catch (e) { log(`  (import ${pkg}: ${e.message})`); }
+  let fn = mod?.[name] ?? mod?.default?.[name];
+  if (typeof fn !== "function") {
+    try { const { createRequire } = await import("node:module"); const m = createRequire(import.meta.url)(pkg); fn = m?.[name] ?? m?.default?.[name]; }
+    catch (e) { log(`  (require ${pkg}: ${e.message})`); }
+  }
+  if (typeof fn !== "function")
+    throw new Error(`${pkg} has no ${name}() - found: ${Object.keys(mod?.default ?? mod ?? {}).join(", ") || "nothing"}`);
+  return fn;
+}
+const parseModule = await load("@observablehq/parser", "parseModule");
+const Runtime = await load("@observablehq/runtime", "Runtime");
 
 const qmdText = fs.readFileSync(QMD, "utf8");
 const blocks = [...qmdText.matchAll(/^```\{ojs[^}\n]*\}[^\n]*\n([\s\S]*?)^```[ \t]*$/gm)].map((m) => m[1]);
@@ -246,6 +261,7 @@ for (const src of blocks) {
   }
 }
 log(`  ${cells.size} named cells`);
+if (!cells.size) { log("FAILED: no cell could be read from the notebook"); process.exit(1); }
 
 const OVERRIDES = JOB === "sequence_role"
   ? { pl_type: "All", pl_scope: "All leagues" }
