@@ -76,6 +76,8 @@ SHOTS_DEADLINE_MIN = float(_env("SHOTS_DEADLINE_MIN", "270"))
 # defaults (--model hgb), the same as your command on the Mac.
 XG_EXTRA_ARGS = _env("XG_EXTRA_ARGS", "")
 XG_DRIVE_FOLDER = _env("XG_DRIVE_FOLDER", "_xG")
+# info tables: the formation-place -> position lookup, kept in Drive _code
+INFO_POSITIONS_CSV = _env("INFO_POSITIONS_CSV", "correct_OG_lineups_place_inca.csv")
 
 REQUIRED_SCRIPTS = ("leaguetest5.py", "fotmobshots.py", "scrape_merger3.py")
 ARCHIVED = ("output", "shots")
@@ -639,17 +641,46 @@ def cmd_wide(args) -> None:
         log("xt_grid.json: first fit saved - reused from now on")
 
 
+INFO_FILES = ("final_events.parquet", "player_stats.parquet", "substitutions.parquet")
+
+
+def cmd_info(args) -> None:
+    """info_tables.py for one league -> <league>/info_tables/*.csv in Drive."""
+    lg = League(**json.loads(args.league or os.environ["LEAGUE_JSON"]))
+    fetch_code()
+    script = find_code_file("info_tables.py")
+    positions = find_code_file(INFO_POSITIONS_CSV)
+
+    merged = WORK / lg.name / "merged"
+    missing = [f for f in INFO_FILES if not download_if_exists((lg.name, "merged"), f, merged / f)]
+    if missing:
+        gh("notice", f"{lg.name}: no {', '.join(missing)} in merged/ yet - no info tables")
+        return
+
+    out = WORK / lg.name / "info_tables"
+    try:
+        run([sys.executable, script.name, "--merged-dir", str(merged),
+             "--positions", str(positions), "--out", str(out)],
+            "info_tables.py", cwd=script.parent)
+    except StepFailed as e:
+        gh("error", f"{lg.name}: {e}")
+        sys.exit(1)
+    n = replace_dir(out, remote(lg.name, "info_tables"))
+    log(f"info_tables: uploaded {n} file(s)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--only", default="", help="comma-separated league folders, e.g. 'USA/MLS,Brazil'")
-    for name in ("run", "wide"):
+    for name in ("run", "wide", "info"):
         r = sub.add_parser(name)
         r.add_argument("--league", help="league JSON (default: $LEAGUE_JSON)")
     sub.add_parser("xg")
     args = ap.parse_args()
-    {"plan": cmd_plan, "run": cmd_run, "xg": cmd_xg, "wide": cmd_wide}[args.cmd](args)
+    {"plan": cmd_plan, "run": cmd_run, "xg": cmd_xg, "wide": cmd_wide,
+     "info": cmd_info}[args.cmd](args)
 
 
 if __name__ == "__main__":
