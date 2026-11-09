@@ -250,7 +250,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install Node packages
-        run: npm install --no-save --no-audit --no-fund @duckdb/node-api hyparquet @observablehq/parser@6 @observablehq/runtime@5 d3@7
+        run: npm install --no-save --no-audit --no-fund @duckdb/node-api hyparquet
       - name: Install rclone
         run: curl -fsSL https://rclone.org/install.sh | sudo bash
       - name: Google Drive login
