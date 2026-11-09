@@ -2,6 +2,7 @@ name: daily-scrape
  
 # Every day:  scrape + merge (each league)  ->  xG model (all leagues pooled)  ->  wide tables (each league)
 #                                           ->  info tables (each league, alongside the xG model)
+#   wide + info  ->  analytics: PMR, DRF, sequences, grades, VAEP, process-data (each league)
  
 on:
   schedule:
@@ -22,6 +23,8 @@ on:
           - xg-and-wide        # skip scraping: xG model, then wide tables
           - wide               # wide tables only (uses the xG already in Drive)
           - info               # info tables only (Pos_info.csv etc.)
+          - analytics          # PMR, DRF, sequences, grades, VAEP, process-data only
+          - info-and-analytics # info tables, then analytics
  
 permissions:
   contents: write            # for the daily keep-alive commit
@@ -186,7 +189,8 @@ jobs:
     needs: [plan, scrape]
     if: >-
       always() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' &&
-      (github.event_name == 'schedule' || inputs.stages == 'all' || inputs.stages == 'info')
+      (github.event_name == 'schedule' || inputs.stages == 'all' || inputs.stages == 'info' ||
+       inputs.stages == 'info-and-analytics')
     name: info ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -216,10 +220,61 @@ jobs:
           LEAGUE_JSON: ${{ toJSON(matrix) }}
         run: python pipeline.py info
  
+  # One job per league, after its wide table and info tables exist: your PMR, DRF,
+  # sequences (+ dashboard tables), grades, VAEP and process-data scripts.
+  analytics:
+    needs: [plan, wide, info]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' &&
+      (github.event_name == 'schedule' || inputs.stages == 'all' ||
+       inputs.stages == 'analytics' || inputs.stages == 'info-and-analytics')
+    name: analytics ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-analytics.txt
+      - run: pip install -r requirements.txt -r requirements-analytics.txt
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Install Node packages
+        run: npm install --no-save --no-audit --no-fund @duckdb/node-api hyparquet @observablehq/parser@6 @observablehq/runtime@5 d3@7
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Google Drive login
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Extra swap for big leagues
+        run: |
+          (sudo fallocate -l 16G /mnt/swapfile2 && sudo chmod 600 /mnt/swapfile2 \
+            && sudo mkswap /mnt/swapfile2 >/dev/null && sudo swapon /mnt/swapfile2) \
+            || echo "::warning::could not add extra swap - continuing without it"
+          free -h
+      - name: PMR, DRF, sequences, grades, VAEP, process-data
+        env:
+          LEAGUE_JSON: ${{ toJSON(matrix) }}
+          ANALYTICS_STEPS: ${{ vars.ANALYTICS_STEPS }}   # optional repo variable, e.g. pmr,drf
+        run: python pipeline.py analytics
+ 
   # GitHub pauses schedules in public repos after 60 days without activity.
   # One tiny commit per day keeps it running forever.
   keepalive:
-    needs: [scrape, xg, wide, info]
+    needs: [scrape, xg, wide, info, analytics]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -227,7 +282,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Record last run
         env:
-          RESULT: "scrape=${{ needs.scrape.result }} xg=${{ needs.xg.result }} wide=${{ needs.wide.result }} info=${{ needs.info.result }}"
+          RESULT: "scrape=${{ needs.scrape.result }} xg=${{ needs.xg.result }} wide=${{ needs.wide.result }} info=${{ needs.info.result }} analytics=${{ needs.analytics.result }}"
         run: |
           echo "$(date -u +%Y-%m-%dT%H:%MZ) $RESULT" > last_run.txt
           git config user.name "github-actions[bot]"
