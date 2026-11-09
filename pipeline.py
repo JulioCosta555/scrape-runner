@@ -78,6 +78,9 @@ XG_EXTRA_ARGS = _env("XG_EXTRA_ARGS", "")
 XG_DRIVE_FOLDER = _env("XG_DRIVE_FOLDER", "_xG")
 # info tables: the formation-place -> position lookup, kept in Drive _code
 INFO_POSITIONS_CSV = _env("INFO_POSITIONS_CSV", "correct_OG_lineups_place_inca.csv")
+# analytics: which tools to run, comma-separated (empty = all):
+#   pmr, drf, sequences, dashboards, grades, vaep, processdata
+ANALYTICS_STEPS = _env("ANALYTICS_STEPS", "")
 
 REQUIRED_SCRIPTS = ("leaguetest5.py", "fotmobshots.py", "scrape_merger3.py")
 ARCHIVED = ("output", "shots")
@@ -669,18 +672,51 @@ def cmd_info(args) -> None:
     log(f"info_tables: uploaded {n} file(s)")
 
 
+def cmd_analytics(args) -> None:
+    """PMR, DRF, sequences (+ dashboards' role / team-style tables), grades, VAEP and
+    process-data for one league -> <league>/analytics/ in Drive. See analytics.py."""
+    import analytics
+
+    lg = League(**json.loads(args.league or os.environ["LEAGUE_JSON"]))
+    fetch_code()
+    base = WORK / lg.name
+    wide_dir, info_dir = base / "wide_events", base / "info_tables"
+    for part, d in (("wide_events", wide_dir), ("info_tables", info_dir)):
+        if not remote_listing(remote(lg.name, part)):
+            gh("notice", f"{lg.name}: no {part}/ in Drive yet - analytics skipped")
+            return
+        rclone("copy", remote(lg.name, part), str(d))
+    wide = sorted(p for p in wide_dir.glob("*.parquet") if not p.name.startswith("._"))
+    if not wide:
+        gh("notice", f"{lg.name}: wide_events/ has no parquet - analytics skipped")
+        return
+
+    steps = [s.strip() for s in ANALYTICS_STEPS.split(",") if s.strip()] or None
+    out = base / "analytics"
+    problems = analytics.run_all(lg.name, wide, info_dir, CODE, base / "_analytics_work", out, steps)
+
+    # one tool's folder at a time: a tool that failed or wasn't run today keeps
+    # yesterday's files in Drive instead of losing them
+    n = 0
+    for sub in sorted(p for p in out.iterdir() if p.is_dir()):
+        n += replace_dir(sub, remote(lg.name, "analytics", sub.name))
+    log(f"analytics: uploaded {n} file(s) -> {ROOT}/{lg.name}/analytics/")
+    if problems:
+        sys.exit(1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("plan")
     p.add_argument("--only", default="", help="comma-separated league folders, e.g. 'USA/MLS,Brazil'")
-    for name in ("run", "wide", "info"):
+    for name in ("run", "wide", "info", "analytics"):
         r = sub.add_parser(name)
         r.add_argument("--league", help="league JSON (default: $LEAGUE_JSON)")
     sub.add_parser("xg")
     args = ap.parse_args()
     {"plan": cmd_plan, "run": cmd_run, "xg": cmd_xg, "wide": cmd_wide,
-     "info": cmd_info}[args.cmd](args)
+     "info": cmd_info, "analytics": cmd_analytics}[args.cmd](args)
 
 
 if __name__ == "__main__":
