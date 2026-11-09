@@ -18,8 +18,10 @@ Steps (each needs the ones before it marked *):
     pmr         pmr_run_sc.mjs -> pmr_archetypes_sc.mjs
     drf         drf.mjs
     sequences   build_sequences.py --source scoresway
-    dashboards  ojs_run.mjs on sequence_analyser_scoresway.qmd and
-                teamstyle_radar_scoresway.qmd          (*sequences, *pmr)
+    dashboards  sequence_role.py  -> sequence_role.csv
+                team_style.py     -> team_style_zscores.csv + team_style_per_game.csv
+                (Python ports of sequence_analyser_scoresway.qmd and
+                teamstyle_radar_scoresway.qmd)                 (*sequences)
     grades      scoresway_to_events.py -> build_grades.py        (*pmr)
     vaep        build_vaep.py --feed scoresway -> build_vaep_dash.py
     processdata processess_data.py --team-split per-team
@@ -38,13 +40,13 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 STEPS = ["pmr", "drf", "sequences", "dashboards", "grades", "vaep", "processdata"]
-NEEDS = {"dashboards": ["sequences", "pmr"], "grades": ["pmr"]}
+NEEDS = {"dashboards": ["sequences"], "grades": ["pmr"]}
 
-SEQ_QMD = "sequence_analyser_scoresway.qmd"
-STYLE_QMD = "teamstyle_radar_scoresway.qmd"
+# the two dashboard ports: a copy in Drive _code wins over the one in this repo
+DASHBOARD_SCRIPTS = ("sequence_role.py", "team_style.py")
 # optional extras: staged when they are in Drive _code, skipped otherwise
 OPTIONAL_DATA = ["Id_keys.csv", "mapping_resolved.csv", "match_bridge.csv",
-                 "minutes_roles_2026.parquet"]
+                 "minutes_roles_2026.parquet", "minutes_2025.parquet", "scoresway_minutes.parquet"]
 
 
 class StepFailed(RuntimeError):
@@ -268,20 +270,43 @@ def step_sequences(ctx) -> None:
 
 
 def step_dashboards(ctx) -> None:
+    """sequence_role.csv, team_style_zscores.csv and team_style_per_game.csv, written
+    next to the sequences outputs (analytics/sequences/)."""
     c, f = ctx["code"], ctx["files"]
-    data = {k: f[k] for k in ("seq_events.parquet", "sequences.parquet", "player.parquet",
-                              "sequences_meta.json", "pmr_sc_archetypes.csv", "team_names.csv",
-                              "true_lineups.csv", "match_mapping_names.csv", "Pos_info.csv",
-                              "Pos_by_game_info.csv") if k in f}
-    if "Id_keys.csv" in f:
-        data["Id_keys.csv"] = f["Id_keys.csv"]
-    out = ctx["out"] / "sequences"
+    out = (ctx["out"] / "sequences").absolute()
+    out.mkdir(parents=True, exist_ok=True)
+    w = ctx["work"] / "dashboards"
+    w.mkdir(parents=True, exist_ok=True)
+
+    def script(name: str) -> Path:
+        return c.find(name, required=False) or HERE / name
+
+    def opt(flag: str, name: str) -> list[str]:
+        return [flag, str(Path(f[name]).absolute())] if name in f else []
+
     problems = []
-    for qmd, job in ((SEQ_QMD, "sequence_role"), (STYLE_QMD, "team_style")):
-        w = workdir(ctx["work"], f"dash_{job}", [c.find(qmd)], data)
+    minutes = next((n for n in ("minutes_2025.parquet", "scoresway_minutes.parquet") if n in f), None)
+    jobs = [
+        ("sequence_role.py", [
+            "--data-dir", "", "--players", str(Path(f["player.parquet"]).absolute()),
+            *opt("--events", "seq_events.parquet"), *opt("--archetypes", "pmr_sc_archetypes.csv"),
+            *opt("--pos-info", "Pos_info.csv"), *opt("--team-names", "team_names.csv"),
+            *opt("--team-map", "match_mapping_names.csv"),
+            *(opt("--minutes", minutes) if minutes else []),
+            "--out", str(out), "--region", ctx["league"]]),
+        ("team_style.py", [
+            "--data-dir", "", "--events", str(Path(f["seq_events.parquet"]).absolute()),
+            *opt("--match-info", "Pos_by_game_info.csv"), *opt("--minutes", "Pos_info.csv"),
+            *opt("--lineups", "true_lineups.csv"), *opt("--team-names", "team_names.csv"),
+            *opt("--fixtures", "match_mapping_names.csv"),
+            "--threads", os.environ.get("TEAM_STYLE_THREADS", "4"),
+            "--out", str(out), "--region", ctx["league"]]),
+    ]
+    if "pmr_sc_archetypes.csv" not in f:
+        gh("warning", f"{ctx['league']}: no PMR archetypes - sequence_role.csv has no PMR minutes")
+    for name, cmd_args in jobs:
         try:
-            run(["node", os.environ.get("OJS_RUN", str(HERE / "ojs_run.mjs")), "--job", job, "--qmd", qmd,
-                 "--out", str(out), "--region", ctx["league"]], w, f"{qmd} -> {job}")
+            run([sys.executable, str(script(name)), *cmd_args], w, name)
         except StepFailed as e:
             problems.append(str(e))
     if problems:
