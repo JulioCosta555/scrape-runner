@@ -452,27 +452,8 @@ def cmd_run(args) -> None:
         if not has_shots:
             log("no shot files - merging without shots")
 
-    # --- 3. merge (an empty --shots-dir means "no shots"; leaving it out would use the
-    #        script's built-in default folder)
-    merged_dirs: list[Path] = []
-    if data_files(league_dir / "output"):
-        base = [sys.executable, "scrape_merger3.py", "--raw-dir", s("output"),
-                "--shots-dir", s("shots") if has_shots else "",
-                "--events-def", str(events_def), "--qualifiers-def", str(quals_def),
-                "--format", MERGE_FORMAT]
-        variants = [("merged", [])]
-        if lg.events_shape:
-            variants.append((f"merged_{lg.events_shape}", ["--events-shape", lg.events_shape]))
-        for folder, extra in variants:
-            try:
-                run(base + ["--outdir", s(folder), *extra], f"scrape_merger3.py -> {folder}")
-                merged_dirs.append(league_dir / folder)
-            except StepFailed as e:
-                problems.append(str(e))
-    else:
-        problems.append("no Scoresway files at all - nothing to merge")
-
-    # --- 4. save back to Drive
+    # --- 3. save the raw scrape to Drive first, so a merge that dies (memory, time
+    #        limit) can't lose today's scraping: a re-run only has to merge
     for part in parts:
         n = len(data_files(league_dir / part))
         if n == 0:
@@ -491,10 +472,31 @@ def cmd_run(args) -> None:
             rclone("purge", remote(lg.name, part), ok_codes=(0, 3))
             log(f"{part}: moved your uploaded folder into {part}.tar (old folder is in Drive's trash)")
 
-    for d in merged_dirs:
-        n = replace_dir(d, remote(lg.name, d.name))
-        if n:
-            log(f"{d.name}: uploaded {n} file(s)")
+    # --- 4. merge (an empty --shots-dir means "no shots"; leaving it out would use the
+    #        script's built-in default folder)
+    merged_dirs: list[Path] = []
+    if data_files(league_dir / "output"):
+        base = [sys.executable, "scrape_merger3.py", "--raw-dir", s("output"),
+                "--shots-dir", s("shots") if has_shots else "",
+                "--events-def", str(events_def), "--qualifiers-def", str(quals_def),
+                "--format", MERGE_FORMAT]
+        variants = [("merged", [])]
+        if lg.events_shape:
+            variants.append((f"merged_{lg.events_shape}", ["--events-shape", lg.events_shape]))
+        for folder, extra in variants:
+            try:
+                run(base + ["--outdir", s(folder), *extra], f"scrape_merger3.py -> {folder}")
+            except StepFailed as e:
+                problems.append(str(e))
+                continue
+            # saved straight away, so merged/ is kept even if merged_<shape> dies
+            d = league_dir / folder
+            merged_dirs.append(d)
+            n = replace_dir(d, remote(lg.name, d.name))
+            if n:
+                log(f"{d.name}: uploaded {n} file(s)")
+    else:
+        problems.append("no Scoresway files at all - nothing to merge")
 
     mins = (time.time() - start) / 60
     if problems:
