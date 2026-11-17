@@ -1,1 +1,1 @@
-2026-11-15T05:14Z scrape=success xg=failure wide=success info=failure analytics=failure
+2026-11-17T02:32Z scrape=failure xg=cancelled wide=failure info=failure analytics=failure
