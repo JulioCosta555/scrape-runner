@@ -25,6 +25,8 @@ Steps (each needs the ones before it marked *):
     grades      scoresway_to_events.py -> build_grades.py        (*pmr)
     vaep        build_vaep.py --feed scoresway -> build_vaep_dash.py
     processdata processess_data.py --team-split per-team
+    playermaps  player_map_events.py -> one CSV per map in player_radar.qmd
+                (player_heatmap.csv, player_passmap.csv, ... with playerId + team names)
 """
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-STEPS = ["pmr", "drf", "sequences", "dashboards", "grades", "vaep", "processdata"]
+STEPS = ["pmr", "drf", "sequences", "dashboards", "grades", "vaep", "processdata", "playermaps"]
 NEEDS = {"dashboards": ["sequences"], "grades": ["pmr"]}
 
 # the two dashboard ports: a copy in Drive _code wins over the one in this repo
@@ -371,9 +373,22 @@ def step_processdata(ctx) -> None:
     log(f"processdata: {n} file(s)")
 
 
+def step_playermaps(ctx) -> None:
+    """player_<map>.csv: the events each of player_radar.qmd's maps draws."""
+    c = ctx["code"]
+    script = c.find("player_map_events.py", required=False) or HERE / "player_map_events.py"
+    out = (ctx["out"] / "player_maps").absolute()
+    w = ctx["work"] / "playermaps"
+    w.mkdir(parents=True, exist_ok=True)
+    run([sys.executable, str(script), "--events", *[str(Path(p).absolute()) for p in ctx["wide"]],
+         "--out", str(out), "--region", ctx["league"]], w, "player_map_events.py")
+    if not (out / "player_shotmap.csv").exists():
+        raise StepFailed("player_map_events.py wrote no map CSVs")
+
+
 STEP_FN = {"pmr": step_pmr, "drf": step_drf, "sequences": step_sequences,
            "dashboards": step_dashboards, "grades": step_grades, "vaep": step_vaep,
-           "processdata": step_processdata}
+           "processdata": step_processdata, "playermaps": step_playermaps}
 
 
 def run_all(league: str, wide: list[Path], info: Path, code_dir: Path, work: Path, out: Path,
