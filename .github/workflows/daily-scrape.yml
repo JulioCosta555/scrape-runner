@@ -3,6 +3,7 @@ name: daily-scrape
 # Every day:  scrape + merge (each league)  ->  xG model (all leagues pooled)  ->  wide tables (each league)
 #                                           ->  info tables (each league, alongside the xG model)
 #   wide + info  ->  analytics: PMR, DRF, sequences, grades, VAEP, process-data (each league)
+#   analytics    ->  publish: every league's analytics merged into All_leagues/ on Cloudflare R2
 
 on:
   schedule:
@@ -25,6 +26,7 @@ on:
           - info               # info tables only (Pos_info.csv etc.)
           - analytics          # PMR, DRF, sequences, grades, VAEP, process-data only
           - info-and-analytics # info tables, then analytics
+          - publish            # All_leagues/ to Cloudflare R2 only (uses what is in Drive)
 
 permissions:
   contents: write            # for the daily keep-alive commit
@@ -283,10 +285,51 @@ jobs:
           ANALYTICS_STEPS: ${{ vars.ANALYTICS_STEPS }}   # optional repo variable, e.g. pmr,drf
         run: python pipeline.py analytics
 
+  # Every league's analytics/ stacked into one file per table (Region column added),
+  # big tables as parquet, uploaded to Cloudflare R2 for the app. Needs the repository
+  # variable R2_REMOTE (e.g. r2:football-app) and an [r2] section in RCLONE_CONF.
+  publish:
+    needs: [plan, analytics]
+    if: >-
+      needs.plan.result == 'success' && !cancelled() &&
+      (github.event_name == 'schedule' || inputs.stages == 'all' || inputs.stages == 'analytics' ||
+       inputs.stages == 'info-and-analytics' || inputs.stages == 'publish')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-analytics.txt
+      - run: pip install -r requirements.txt -r requirements-analytics.txt
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+      - name: Google Drive + R2 login
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Room on the big disk
+        run: sudo mkdir -p /mnt/publish && sudo chown "$USER" /mnt/publish && df -h / /mnt
+      - name: Merge all leagues and upload to R2
+        env:
+          R2_REMOTE: ${{ vars.R2_REMOTE }}                    # e.g. r2:football-app
+          R2_FOLDER: ${{ vars.R2_FOLDER }}                    # default All_leagues
+          PUBLISH_PARQUET_MB: ${{ vars.PUBLISH_PARQUET_MB }}  # default 25
+          PUBLISH_SKIP: ${{ vars.PUBLISH_SKIP }}              # extra files to leave out
+          PUBLISH_CODEC: ${{ vars.PUBLISH_CODEC }}            # default zstd
+          PUBLISH_WORK: /mnt/publish
+        run: python pipeline.py publish
+
   # GitHub pauses schedules in public repos after 60 days without activity.
   # One tiny commit per day keeps it running forever.
   keepalive:
-    needs: [scrape, xg, wide, info, analytics]
+    needs: [scrape, xg, wide, info, analytics, publish]
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -294,7 +337,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Record last run
         env:
-          RESULT: "scrape=${{ needs.scrape.result }} xg=${{ needs.xg.result }} wide=${{ needs.wide.result }} info=${{ needs.info.result }} analytics=${{ needs.analytics.result }}"
+          RESULT: "scrape=${{ needs.scrape.result }} xg=${{ needs.xg.result }} wide=${{ needs.wide.result }} info=${{ needs.info.result }} analytics=${{ needs.analytics.result }} publish=${{ needs.publish.result }}"
         run: |
           echo "$(date -u +%Y-%m-%dT%H:%MZ) $RESULT" > last_run.txt
           git config user.name "github-actions[bot]"
