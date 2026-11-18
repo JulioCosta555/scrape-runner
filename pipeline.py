@@ -707,6 +707,25 @@ def cmd_analytics(args) -> None:
         sys.exit(1)
 
 
+def cmd_publish(args) -> None:
+    """Every league's analytics/ merged into All_leagues/ and uploaded to Cloudflare R2
+    for the app. See publish_r2.py."""
+    import publish_r2
+
+    target = os.environ.get("R2_REMOTE", "").strip().rstrip("/")
+    if not target:
+        gh("notice", "publish: no R2_REMOTE repository variable - nothing published")
+        return
+    if ":" not in target:
+        raise SystemExit(f"R2_REMOTE should be 'remote:bucket', e.g. r2:football-app - got {target!r}")
+    folder = os.environ.get("R2_FOLDER", "").strip().strip("/") or "All_leagues"
+    fetch_code()
+    leagues = load_leagues(find_code_file(LEAGUES_CSV))
+    problems = publish_r2.publish(leagues, remote(), f"{target}/{folder}", WORK, rclone, log, gh)
+    if problems:
+        sys.exit(1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -716,9 +735,10 @@ def main() -> None:
         r = sub.add_parser(name)
         r.add_argument("--league", help="league JSON (default: $LEAGUE_JSON)")
     sub.add_parser("xg")
+    sub.add_parser("publish")
     args = ap.parse_args()
     {"plan": cmd_plan, "run": cmd_run, "xg": cmd_xg, "wide": cmd_wide,
-     "info": cmd_info, "analytics": cmd_analytics}[args.cmd](args)
+     "info": cmd_info, "analytics": cmd_analytics, "publish": cmd_publish}[args.cmd](args)
 
 
 if __name__ == "__main__":
