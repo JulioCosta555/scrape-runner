@@ -12,6 +12,7 @@ stacked into one file, with a Region column (the league folder, e.g.
     All_leagues/leagues.csv               the leagues that went in
     All_leagues/manifest.json             every file: format, rows, size, leagues
 
+Each league's info_tables/Pos_by_game_info.csv goes up too, into inputs/ (EXTRA).
 Leagues whose file differs in columns still stack: missing columns are left
 empty. Files that are only inputs for other tools are left out (PUBLISH_SKIP),
 and files that are the same in every league are published once (PUBLISH_ONCE).
@@ -39,6 +40,8 @@ DEFAULT_SKIP = {
 }
 ONCE = {"pitch_responsibility_grid.csv"}      # identical in every league
 TABLE_EXT = {".csv", ".parquet"}
+# files from outside analytics/ that go up too: <league>/<path> -> All_leagues/<folder>/
+EXTRA = {"info_tables/Pos_by_game_info.csv": "inputs"}
 
 
 def _escape(path: str) -> str:
@@ -74,6 +77,7 @@ def stage(leagues, remote_root: str, dest: Path, skip: set[str], rclone, log) ->
     """copy <league>/analytics/** of every league from Drive, minus the skipped files"""
     rules = [f"- {_escape(n)}" for n in sorted(skip)]
     rules += [f"+ /{_escape(lg.name)}/analytics/**" for lg in leagues]
+    rules += [f"+ /{_escape(lg.name)}/{_escape(extra)}" for lg in leagues for extra in EXTRA]
     rules.append("- **")
     filt = dest.parent / "publish_filter.txt"
     filt.write_text("\n".join(rules) + "\n", encoding="utf-8")
@@ -85,6 +89,10 @@ def group_tables(stage_dir: Path, leagues) -> dict[tuple[str, str], list[tuple[P
     """(tool folder, file name) -> [(path, league), ...] in scrape_leagues.csv order"""
     groups: dict[tuple[str, str], list[tuple[Path, str]]] = {}
     for lg in leagues:
+        for extra, folder in EXTRA.items():
+            p = stage_dir / lg.name / extra
+            if p.is_file() and p.stat().st_size > 0:
+                groups.setdefault((folder, p.name), []).append((p, lg.name))
         a = stage_dir / lg.name / "analytics"
         if not a.is_dir():
             continue
