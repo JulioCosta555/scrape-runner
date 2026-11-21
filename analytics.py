@@ -25,6 +25,8 @@ Steps (each needs the ones before it marked *):
     grades      scoresway_to_events.py -> build_grades.py        (*pmr)
     vaep        build_vaep.py --feed scoresway -> build_vaep_dash.py
     processdata processess_data.py --team-split per-team
+    teamseq     team_sequences.py -> team_sequences.parquet + team_sequence_events.parquet
+                (possession sequences for the app, straight from the wide events)
     playermaps  player_map_events.py -> one CSV per map in player_radar.qmd
                 (player_heatmap.csv, player_passmap.csv, ... with playerId + team names)
 """
@@ -41,7 +43,7 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-STEPS = ["pmr", "drf", "sequences", "dashboards", "grades", "vaep", "processdata", "playermaps"]
+STEPS = ["pmr", "drf", "sequences", "dashboards", "teamseq", "grades", "vaep", "processdata", "playermaps"]
 NEEDS = {"dashboards": ["sequences"], "grades": ["pmr"]}
 
 # the two dashboard ports: a copy in Drive _code wins over the one in this repo
@@ -373,6 +375,19 @@ def step_processdata(ctx) -> None:
     log(f"processdata: {n} file(s)")
 
 
+def step_teamseq(ctx) -> None:
+    """team_sequences.parquet + team_sequence_events.parquet (analytics/team_sequences/)."""
+    c = ctx["code"]
+    script = c.find("team_sequences.py", required=False) or HERE / "team_sequences.py"
+    out = (ctx["out"] / "team_sequences").absolute()
+    w = ctx["work"] / "teamseq"
+    w.mkdir(parents=True, exist_ok=True)
+    run([sys.executable, str(script), "--events", *[str(Path(p).absolute()) for p in ctx["wide"]],
+         "--out", str(out)], w, "team_sequences.py")
+    if not (out / "team_sequences.parquet").exists():
+        raise StepFailed("team_sequences.py wrote no team_sequences.parquet")
+
+
 def step_playermaps(ctx) -> None:
     """player_<map>.csv: the events each of player_radar.qmd's maps draws."""
     c = ctx["code"]
@@ -388,12 +403,20 @@ def step_playermaps(ctx) -> None:
 
 STEP_FN = {"pmr": step_pmr, "drf": step_drf, "sequences": step_sequences,
            "dashboards": step_dashboards, "grades": step_grades, "vaep": step_vaep,
-           "processdata": step_processdata, "playermaps": step_playermaps}
+           "processdata": step_processdata, "playermaps": step_playermaps,
+           "teamseq": step_teamseq}
 
 
 def run_all(league: str, wide: list[Path], info: Path, code_dir: Path, work: Path, out: Path,
             steps: list[str] | None = None) -> list[str]:
+    unknown = [s for s in (steps or []) if s not in STEPS]
+    if unknown:
+        gh("warning", f"ANALYTICS_STEPS: unknown step(s) {', '.join(unknown)} - "
+                      f"known: {', '.join(STEPS)}")
     steps = [s for s in STEPS if s in (steps or STEPS)]
+    if not steps:
+        return ["no analytics step to run (check ANALYTICS_STEPS)"]
+    log(f"analytics steps: {', '.join(steps)}")
     code = Code(code_dir)
     work.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
