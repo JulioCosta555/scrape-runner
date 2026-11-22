@@ -693,9 +693,15 @@ def cmd_analytics(args) -> None:
         gh("notice", f"{lg.name}: wide_events/ has no parquet - analytics skipped")
         return
 
+    # the official team stats + lineups for the match tables (optional)
+    extra = base / "merged_extra"
+    for f in ("team_stats.parquet", "player_stats.parquet"):
+        download_if_exists((lg.name, "merged"), f, extra / f)
+
     steps = [s.strip() for s in ANALYTICS_STEPS.split(",") if s.strip()] or None
     out = base / "analytics"
-    problems = analytics.run_all(lg.name, wide, info_dir, CODE, base / "_analytics_work", out, steps)
+    problems = analytics.run_all(lg.name, wide, info_dir, CODE, base / "_analytics_work", out, steps,
+                                 merged=extra)
 
     # one tool's folder at a time: a tool that failed or wasn't run today keeps
     # yesterday's files in Drive instead of losing them

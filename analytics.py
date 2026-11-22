@@ -27,6 +27,8 @@ Steps (each needs the ones before it marked *):
     processdata processess_data.py --team-split per-team
     teamseq     team_sequences.py -> team_sequences.parquet + team_sequence_events.parquet
                 (possession sequences for the app, straight from the wide events)
+    matchstats  match_stats.py -> match_metrics.csv, match_shots.csv, match_lineups.csv
+                (index.qmd's team match stats, for the app's match report)
     playermaps  player_map_events.py -> one CSV per map in player_radar.qmd
                 (player_heatmap.csv, player_passmap.csv, ... with playerId + team names)
 """
@@ -43,7 +45,8 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-STEPS = ["pmr", "drf", "sequences", "dashboards", "teamseq", "grades", "vaep", "processdata", "playermaps"]
+STEPS = ["pmr", "drf", "sequences", "dashboards", "teamseq", "matchstats", "grades", "vaep",
+         "processdata", "playermaps"]
 NEEDS = {"dashboards": ["sequences"], "grades": ["pmr"]}
 
 # the two dashboard ports: a copy in Drive _code wins over the one in this repo
@@ -388,6 +391,24 @@ def step_teamseq(ctx) -> None:
         raise StepFailed("team_sequences.py wrote no team_sequences.parquet")
 
 
+def step_matchstats(ctx) -> None:
+    """match_metrics.csv, match_shots.csv (+ match_lineups.csv) -> analytics/matches/"""
+    c = ctx["code"]
+    script = c.find("match_stats.py", required=False) or HERE / "match_stats.py"
+    out = (ctx["out"] / "matches").absolute()
+    w = ctx["work"] / "matchstats"
+    w.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, str(script), "--events", *[str(Path(p).absolute()) for p in ctx["wide"]],
+           "--out", str(out)]
+    merged = ctx.get("merged")
+    for flag, name in (("--team-stats", "team_stats.parquet"), ("--player-stats", "player_stats.parquet")):
+        if merged and (merged / name).exists():
+            cmd += [flag, str((merged / name).absolute())]
+    run(cmd, w, "match_stats.py")
+    if not (out / "match_metrics.csv").exists():
+        raise StepFailed("match_stats.py wrote no match_metrics.csv")
+
+
 def step_playermaps(ctx) -> None:
     """player_<map>.csv: the events each of player_radar.qmd's maps draws."""
     c = ctx["code"]
@@ -404,11 +425,11 @@ def step_playermaps(ctx) -> None:
 STEP_FN = {"pmr": step_pmr, "drf": step_drf, "sequences": step_sequences,
            "dashboards": step_dashboards, "grades": step_grades, "vaep": step_vaep,
            "processdata": step_processdata, "playermaps": step_playermaps,
-           "teamseq": step_teamseq}
+           "teamseq": step_teamseq, "matchstats": step_matchstats}
 
 
 def run_all(league: str, wide: list[Path], info: Path, code_dir: Path, work: Path, out: Path,
-            steps: list[str] | None = None) -> list[str]:
+            steps: list[str] | None = None, merged: Path | None = None) -> list[str]:
     unknown = [s for s in (steps or []) if s not in STEPS]
     if unknown:
         gh("warning", f"ANALYTICS_STEPS: unknown step(s) {', '.join(unknown)} - "
@@ -428,7 +449,8 @@ def run_all(league: str, wide: list[Path], info: Path, code_dir: Path, work: Pat
     collect(work / "_inputs", ["team_names.csv", "true_lineups.csv",
                                "pitch_responsibility_grid.csv"], out / "inputs")
 
-    ctx = {"league": league, "wide": wide, "files": files, "code": code, "work": work, "out": out}
+    ctx = {"league": league, "wide": wide, "files": files, "code": code, "work": work, "out": out,
+           "merged": merged}
     done, problems = set(), []
     for s in steps:
         missing = [n for n in NEEDS.get(s, []) if n not in done]
