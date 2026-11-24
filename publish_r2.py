@@ -12,7 +12,8 @@ stacked into one file, with a Region column (the league folder, e.g.
     All_leagues/leagues.csv               the leagues that went in
     All_leagues/manifest.json             every file: format, rows, size, leagues
 
-Each league's info_tables/Pos_by_game_info.csv goes up too, into inputs/ (EXTRA).
+Each league's info_tables/Pos_by_game_info.csv goes up too, into inputs/, and
+merged/match_competition_info.csv into matches/ (EXTRA).
 Leagues whose file differs in columns still stack: missing columns are left
 empty. Files that are only inputs for other tools are left out (PUBLISH_SKIP),
 and files that are the same in every league are published once (PUBLISH_ONCE).
@@ -41,7 +42,8 @@ DEFAULT_SKIP = {
 ONCE = {"pitch_responsibility_grid.csv"}      # identical in every league
 TABLE_EXT = {".csv", ".parquet"}
 # files from outside analytics/ that go up too: <league>/<path> -> All_leagues/<folder>/
-EXTRA = {"info_tables/Pos_by_game_info.csv": "inputs"}
+EXTRA = {"info_tables/Pos_by_game_info.csv": "inputs",
+         "merged/match_competition_info.csv": "matches"}
 
 
 def _escape(path: str) -> str:
