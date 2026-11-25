@@ -78,6 +78,8 @@ XG_EXTRA_ARGS = _env("XG_EXTRA_ARGS", "")
 XG_DRIVE_FOLDER = _env("XG_DRIVE_FOLDER", "_xG")
 # info tables: the formation-place -> position lookup, kept in Drive _code
 INFO_POSITIONS_CSV = _env("INFO_POSITIONS_CSV", "correct_OG_lineups_place_inca.csv")
+# hand corrections for Pos_by_game_info: the first of these found in Drive _code
+INFO_FIXES_CSV = ("Pos_info_fixes.csv", "Pos_info_missing_slots.csv")
 # analytics: which tools to run, comma-separated (empty = all):
 #   pmr, drf, sequences, dashboards, grades, vaep, processdata
 ANALYTICS_STEPS = _env("ANALYTICS_STEPS", "")
@@ -663,9 +665,17 @@ def cmd_info(args) -> None:
         return
 
     out = WORK / lg.name / "info_tables"
+    # hand corrections kept in Drive _code (optional): slots, formations, minutes
+    fixes = []
+    for name in INFO_FIXES_CSV:
+        try:
+            fixes = ["--fixes", str(find_code_file(name))]
+            break
+        except SystemExit:
+            continue
     try:
         run([sys.executable, script.name, "--merged-dir", str(merged),
-             "--positions", str(positions), "--out", str(out)],
+             "--positions", str(positions), "--out", str(out), *fixes],
             "info_tables.py", cwd=script.parent)
     except StepFailed as e:
         gh("error", f"{lg.name}: {e}")

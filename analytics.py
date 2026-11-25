@@ -365,8 +365,12 @@ def step_vaep(ctx) -> None:
 def step_processdata(ctx) -> None:
     c, f = ctx["code"], ctx["files"]
     data = {**wide_names(ctx["wide"])}
-    for name in ("Pos_info.csv", "match_mapping_names.csv", "team_names.csv"):
-        data[name] = f[name]
+    # Pos_by_game_info.csv next to Pos_info.csv: processess_data.py picks it up for
+    # who was in goal in each match (goalkeeping stats, clean sheets)
+    for name in ("Pos_info.csv", "Pos_by_game_info.csv", "match_mapping_names.csv",
+                 "team_names.csv"):
+        if name in f:
+            data[name] = f[name]
     w = workdir(ctx["work"], "processdata", [c.find("processess_data.py")], data)
     events = "data/wide_events.parquet" if len(ctx["wide"]) == 1 else "data/wide_events_*.parquet"
     run([sys.executable, "processess_data.py", "--feed", "scoresway", "--events", events,
