@@ -670,6 +670,18 @@ def cmd_info(args) -> None:
     except StepFailed as e:
         gh("error", f"{lg.name}: {e}")
         sys.exit(1)
+
+    # which fixtures / players have no position, and why (never fails the job)
+    try:
+        audit = find_code_file("positions_audit.py")      # a copy in Drive _code wins
+    except SystemExit:
+        audit = HERE / "positions_audit.py"
+    try:
+        run([sys.executable, str(audit), "--merged-dir", str(merged), "--info-dir", str(out),
+             "--positions", str(positions), "--out", str(out)], "positions_audit.py")
+    except StepFailed as e:
+        gh("warning", f"{lg.name}: {e}")
+
     n = replace_dir(out, remote(lg.name, "info_tables"))
     log(f"info_tables: uploaded {n} file(s)")
 

@@ -43,7 +43,9 @@ ONCE = {"pitch_responsibility_grid.csv"}      # identical in every league
 TABLE_EXT = {".csv", ".parquet"}
 # files from outside analytics/ that go up too: <league>/<path> -> All_leagues/<folder>/
 EXTRA = {"info_tables/Pos_by_game_info.csv": "inputs",
-         "merged/match_competition_info.csv": "matches"}
+         "merged/match_competition_info.csv": "matches",
+         "info_tables/positions_audit.csv": "audit",
+         "info_tables/positions_audit_players.csv": "audit"}
 
 
 def _escape(path: str) -> str:
