@@ -97,9 +97,11 @@ COLUMN_ALIASES = {
     "season": ["season", "fotmob_season"],
     "events_shape": ["events_shape", "shape"],
     "active": ["active", "enabled"],
+    "skip_scrape": ["skip_scrape", "skip scrape", "skip"],
 }
 NULLS = {"", "nan", "none", "null", "na", "n/a", "-"}
 FALSY = {"0", "false", "no", "n", "off"}
+TRUTHY = {"1", "true", "yes", "y", "on", "x", "skip"}
 
 
 def log(msg: str) -> None:
@@ -120,6 +122,7 @@ class League:
     fotmob_slug: str
     season: str
     events_shape: str       # "" or "narrow"
+    skip_scrape: bool = False   # Skip_scrape=Yes: no scraping; every later stage still runs
 
     @property
     def has_fotmob(self) -> bool:
@@ -201,7 +204,8 @@ def load_leagues(path: Path) -> list[League]:
                 continue
             seen.add(name)
             leagues.append(League(name, sw, fid, slug if fid else "",
-                                  _intish(get("season")) or DEFAULT_SEASON, get("events_shape")))
+                                  _intish(get("season")) or DEFAULT_SEASON, get("events_shape"),
+                                  get("skip_scrape").lower() in TRUTHY))
     if not leagues:
         raise SystemExit(f"{path.name}: no usable league rows")
     return leagues
@@ -387,8 +391,25 @@ def cmd_plan(args) -> None:
                              f"Names look like: {', '.join(l.name for l in leagues[:4])}")
         leagues = [lg for lg in leagues if any(match(lg, t) for t in wanted)]
     log(f"{len(leagues)} league(s): " + ", ".join(
-        f"{l.name}{' +shots' if l.has_fotmob else ''}" for l in leagues))
+        f"{l.name}{' +shots' if l.has_fotmob else ''}{' (no scrape)' if l.skip_scrape else ''}"
+        for l in leagues))
+    # Skip_scrape=Yes leagues are not scraped, but still go through xG, wide, info,
+    # analytics and publish. One that has never been merged still gets a scrape job,
+    # which then only merges what is already in Drive.
+    to_scrape = [lg for lg in leagues if not lg.skip_scrape]
+    skipped = [lg for lg in leagues if lg.skip_scrape]
+    if skipped:
+        res = rclone("lsf", remote(), "--dirs-only", "-R", "--max-depth", "3",
+                     ok_codes=(0, 3), capture=True)
+        have = {d.rstrip("/") for d in (res.stdout or "").splitlines()}
+        unmerged = [lg for lg in skipped if f"{lg.name}/merged" not in have]
+        to_scrape += unmerged
+        log(f"not scraped (Skip_scrape): {len(skipped)} league(s)"
+            + (f"; merge only, no merged/ yet: {', '.join(l.name for l in unmerged)}" if unmerged else ""))
+    order = {lg.name: i for i, lg in enumerate(leagues)}
+    to_scrape.sort(key=lambda lg: order[lg.name])
     print("matrix=" + json.dumps([asdict(l) for l in leagues]))
+    print("scrape_matrix=" + json.dumps([asdict(l) for l in to_scrape]))
 
 
 def cmd_run(args) -> None:
@@ -409,6 +430,9 @@ def cmd_run(args) -> None:
     tmp = WORK / "_tmp"
     tmp.mkdir(exist_ok=True)
     listing = remote_listing(remote(lg.name))
+    if lg.skip_scrape and "merged" in listing:
+        log(f"{lg.name}: Skip_scrape=Yes and merged/ is in Drive - nothing to do")
+        return
     parts = ["output"] + (["shots"] if lg.has_fotmob else [])
     before: dict[str, int] = {}
     migrated: list[str] = []
@@ -426,6 +450,28 @@ def cmd_run(args) -> None:
     problems: list[str] = []
     s = lambda m: str(league_dir / m)  # noqa: E731
 
+    if lg.skip_scrape:
+        # Skip_scrape=Yes: nothing new is fetched; only merge what Drive already has
+        # (plan only sends such a league here when it has no merged/ yet)
+        log(f"{lg.name}: Skip_scrape=Yes - not scraping, merging the files already in Drive")
+        has_shots = lg.has_fotmob and any(
+            not p.name.startswith("._") for p in (league_dir / "shots").rglob("*shots*.json"))
+    else:
+        has_shots = scrape(lg, league_dir, parts, before, migrated, tmp, start, problems, s)
+    merge(lg, league_dir, has_shots, events_def, quals_def, problems, s)
+
+    mins = (time.time() - start) / 60
+    if problems:
+        for p in problems:
+            gh("error", f"{lg.name}: {p}")
+        sys.exit(1)
+    log(f"{lg.name}: done in {mins:.0f} min")
+
+
+def scrape(lg: League, league_dir: Path, parts: list[str], before: dict[str, int],
+           migrated: list[str], tmp: Path, start: float, problems: list[str], s) -> bool:
+    """Scoresway events + Fotmob shots, saved to Drive as soon as they are fetched.
+    Returns whether there are shot files to merge."""
     # --- 1. Scoresway events
     try:
         run([sys.executable, "leaguetest5.py", "--league", lg.scoresway_league,
@@ -473,7 +519,11 @@ def cmd_run(args) -> None:
         if part in migrated:  # the loose-file copy is now inside the .tar
             rclone("purge", remote(lg.name, part), ok_codes=(0, 3))
             log(f"{part}: moved your uploaded folder into {part}.tar (old folder is in Drive's trash)")
+    return has_shots
 
+
+def merge(lg: League, league_dir: Path, has_shots: bool, events_def: Path, quals_def: Path,
+          problems: list[str], s) -> None:
     # --- 4. merge (an empty --shots-dir means "no shots"; leaving it out would use the
     #        script's built-in default folder)
     merged_dirs: list[Path] = []
@@ -499,13 +549,6 @@ def cmd_run(args) -> None:
                 log(f"{d.name}: uploaded {n} file(s)")
     else:
         problems.append("no Scoresway files at all - nothing to merge")
-
-    mins = (time.time() - start) / 60
-    if problems:
-        for p in problems:
-            gh("error", f"{lg.name}: {p}")
-        sys.exit(1)
-    log(f"{lg.name}: done in {mins:.0f} min")
 
 
 def model_file_stem(lg: League) -> str:
