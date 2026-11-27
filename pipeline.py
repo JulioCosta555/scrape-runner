@@ -665,8 +665,14 @@ def cmd_wide(args) -> None:
     cmd = [sys.executable, script.name, "--events", str(events)]
     grid, had_grid = merged / "xt_grid.json", False
     if lg.has_fotmob:
-        # shots league: fotmob xG is already in final_events
+        # shots league: fotmob xG is already in final_events. Shots it has no xG
+        # for (shot files late or missing) get your model's xG instead.
         had_grid = download_if_exists((lg.name,), "xt_grid.json", grid)
+        xg = merged / "xG.parquet"
+        if download_if_exists((lg.name,), "xG.parquet", xg):
+            cmd += ["--xg", str(xg)]
+        else:
+            log(f"{lg.name}: no xG.parquet from the model yet - shots without fotmob xG stay empty")
         cmd += ["--enrich", "--carry-events", "--xthreat", "--xt-grid", str(grid)]
     else:
         # no-shots league: xG comes from your model
