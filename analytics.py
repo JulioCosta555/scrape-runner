@@ -286,7 +286,9 @@ def step_dashboards(ctx) -> None:
     w.mkdir(parents=True, exist_ok=True)
 
     def script(name: str) -> Path:
-        return c.find(name, required=False) or HERE / name
+        found = c.find(name, required=False)
+        log(f"{name}: {'your copy in Drive _code' if found else 'the repo copy'}")
+        return found or HERE / name
 
     def opt(flag: str, name: str) -> list[str]:
         return [flag, str(Path(f[name]).absolute())] if name in f else []
