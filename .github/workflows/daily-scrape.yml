@@ -49,7 +49,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix: ${{ steps.plan.outputs.matrix }}               # every league: xG, wide, info, analytics, publish
+      scrape_matrix: ${{ steps.plan.outputs.scrape_matrix }} # minus Skip_scrape=Yes leagues
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -73,7 +74,7 @@ jobs:
   scrape:
     needs: plan
     if: >-
-      needs.plan.outputs.matrix != '[]' &&
+      needs.plan.outputs.scrape_matrix != '[]' &&
       (github.event_name == 'schedule' || inputs.stages == 'all' || inputs.stages == 'scrape')
     name: scrape ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -82,7 +83,7 @@ jobs:
       fail-fast: false       # one league failing never stops the others
       max-parallel: 6        # leagues at the same time - gentle on Scoresway/Fotmob and Drive
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+        include: ${{ fromJSON(needs.plan.outputs.scrape_matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
